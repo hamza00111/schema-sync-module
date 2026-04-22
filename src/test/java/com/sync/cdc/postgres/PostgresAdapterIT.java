@@ -6,7 +6,7 @@ import com.sync.core.SyncMapping;
 import com.sync.model.ChangeEvent;
 import com.sync.model.ChangeEvent.OperationType;
 import com.sync.model.SyncCommand;
-import com.sync.writer.SyncWriter;
+import com.sync.writer.JdbcSyncSink;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -227,8 +227,8 @@ class PostgresAdapterIT {
     void syncEngine_mirrorsInsertAndUpdate_throughTriggersAndWriter() {
         SyncMapping<Long> mapping = new MirrorMapping();
 
-        SyncWriter writer = new SyncWriter(jdbc, dialect);
-        SyncEngine<Long> engine = new SyncEngine<>(cdcSource, lsnStore, writer);
+        JdbcSyncSink sink = new JdbcSyncSink("default", jdbc, dialect);
+        SyncEngine<Long> engine = new SyncEngine<>(cdcSource, lsnStore);
         engine.initialize(mapping);
 
         // Write 2 source rows + update one of them — net: 2 upserts
@@ -236,7 +236,7 @@ class PostgresAdapterIT {
         jdbc.update("INSERT INTO products (id, name, price) VALUES (?, ?, ?)", 2L, "B", new BigDecimal("2.00"));
         jdbc.update("UPDATE products SET price = ? WHERE id = ?", new BigDecimal("1.50"), 1L);
 
-        SyncEngine.SyncResult<Long> result = engine.sync(mapping);
+        SyncEngine.SyncResult<Long> result = engine.sync(mapping, sink);
 
         assertThat(result.totalChanges()).isEqualTo(2);
         assertThat(result.commandsExecuted()).isEqualTo(2);
@@ -257,14 +257,14 @@ class PostgresAdapterIT {
     void syncEngine_skipsSyncOriginatedChanges() {
         SyncMapping<Long> mapping = new MirrorMapping();
 
-        SyncWriter writer = new SyncWriter(jdbc, dialect);
-        SyncEngine<Long> engine = new SyncEngine<>(cdcSource, lsnStore, writer);
+        JdbcSyncSink sink = new JdbcSyncSink("default", jdbc, dialect);
+        SyncEngine<Long> engine = new SyncEngine<>(cdcSource, lsnStore);
         engine.initialize(mapping);
 
         jdbc.update("INSERT INTO products (id, name, price, sync_source) VALUES (?, ?, ?, 'SYNC')",
                 1L, "A", new BigDecimal("1"));
 
-        SyncEngine.SyncResult<Long> result = engine.sync(mapping);
+        SyncEngine.SyncResult<Long> result = engine.sync(mapping, sink);
 
         assertThat(result.totalChanges()).isEqualTo(1);
         assertThat(result.changesSkipped()).isEqualTo(1);

@@ -43,6 +43,18 @@ public interface SyncMapping<P extends Comparable<P>> {
      */
     SyncDirection direction();
 
+    /**
+     * Name of the {@link com.sync.cdc.spi.SyncSink} bean that this mapping's commands should be
+     * dispatched to. Defaults to {@code "default"}, which the built-in adapter configs wire to a
+     * JDBC sink against the local database.
+     *
+     * <p>Override to route commands to a different sink (e.g. a REST API sink that pushes to
+     * another module's HTTP endpoint).
+     */
+    default String sinkName() {
+        return "default";
+    }
+
     enum SyncDirection {
         LEGACY_TO_NEW,
         NEW_TO_LEGACY

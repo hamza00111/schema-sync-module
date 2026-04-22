@@ -4,7 +4,7 @@ import java.util.Map;
 
 /**
  * Represents a write operation to be applied to a target table.
- * Produced by SyncMapping.map() and executed by SyncWriter.
+ * Produced by SyncMapping.map() and dispatched by a SyncSink (JDBC, REST, etc).
  */
 public record SyncCommand(
         /* Target table (schema-qualified, e.g., "dbo.NewOrders") */

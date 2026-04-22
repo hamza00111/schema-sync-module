@@ -30,7 +30,8 @@ When migrating from a legacy schema to a new schema using the strangler fig patt
        │                               │  └──────┬──────┘ │ │
        │                               │         ▼        │ │
        │                               │  ┌─────────────┐ │ │
-       │                               │  │  SyncWriter  │ │ │
+       │                               │  │   SyncSink   │ │ │
+       │                               │  │ (JDBC / REST)│ │ │
        │                               │  └──────┬──────┘ │ │
        │                               └─────────┼───────┘ │
        │                                         ▼         ▼
@@ -124,8 +125,47 @@ The module auto-discovers your `SyncMapping` and `ReconciliationCheck` beans and
 
 Every table must have a `sync_source VARCHAR(10) DEFAULT 'APP'` column.
 - Application writes → `sync_source = 'APP'` (the default)
-- Sync writes → `sync_source = 'SYNC'` (set explicitly by SyncWriter)
+- Sync writes → `sync_source = 'SYNC'` (set explicitly by the sink)
 - SyncMapping implementations call `event.isSyncOriginated()` to skip sync-originated changes
+
+## Sinks
+
+The write path is pluggable. A **`SyncSink`** receives the `SyncCommand`s produced by a mapping
+and applies them to the target. Two built-in sinks ship:
+
+- **`JdbcSyncSink`** — executes MERGE/DELETE through `JdbcTemplate` + `WriteDialect`. The
+  adapter configs register one automatically under the bean name `"default"`, so existing
+  mappings work with no code change.
+- **`RestApiSyncSink`** — dispatches each command as an HTTP call via Spring's `RestClient`.
+  Use this when the target is another service's REST API rather than its database. The call
+  shape is produced by a `Function<SyncCommand, RestCall>`; `DefaultRestCallPlanner` handles
+  the common "POST /{entity}" + "DELETE /{entity}/{id}" convention.
+
+### Picking a sink per mapping
+
+A mapping selects its sink by bean name via `SyncMapping.sinkName()` (default: `"default"`):
+
+```java
+@Bean
+public SyncSink catalogRestSink() {
+    RestClient client = RestClient.builder().baseUrl("https://catalog.internal").build();
+    return new RestApiSyncSink("catalog-rest", client, new DefaultRestCallPlanner());
+}
+
+@Component
+public class OrdersToCatalogMapping implements SyncMapping<ByteArrayPosition> {
+    @Override public String sinkName() { return "catalog-rest"; }
+    // ...
+}
+```
+
+### NEW → LEGACY: outbox as source
+
+For the reverse direction (push changes from the new module back to legacy), implement a
+`CdcSource<Long>` that reads from a **transactional outbox** table in the new module's DB and
+wire it to a `JdbcSyncSink` pointing at the legacy database. The outbox schema and loop-break
+strategy (e.g. a `SET CONTEXT_INFO 0x...` wrap so legacy CDC can filter the echo) are
+application-specific; define them to match your legacy CDC filters.
 
 ## Monitoring
 
@@ -153,7 +193,10 @@ schema-sync-module/
 │   │   ├── ChangeEvent.java             -- CDC change representation
 │   │   └── SyncCommand.java             -- Write command representation
 │   ├── writer/
-│   │   └── SyncWriter.java              -- Executes MERGE/DELETE
+│   │   ├── JdbcSyncSink.java            -- Executes MERGE/DELETE
+│   │   ├── RestApiSyncSink.java         -- Dispatches commands as HTTP calls
+│   │   ├── DefaultRestCallPlanner.java  -- SyncCommand → POST/DELETE default
+│   │   └── RestCall.java                -- (verb, path, body) record
 │   ├── reconciliation/
 │   │   ├── ReconciliationCheck.java      -- ★ Drift detection (you implement this)
 │   │   └── ReconciliationEngine.java     -- Runs checks on schedule

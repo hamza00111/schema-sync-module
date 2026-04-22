@@ -3,10 +3,11 @@ package com.sync.cdc.sqlserver;
 import com.sync.cdc.spi.CdcSource;
 import com.sync.cdc.spi.HealthQueries;
 import com.sync.cdc.spi.LsnStore;
+import com.sync.cdc.spi.SyncSink;
 import com.sync.cdc.spi.WriteDialect;
 import com.sync.config.SyncProperties;
 import com.sync.core.SyncEngine;
-import com.sync.writer.SyncWriter;
+import com.sync.writer.JdbcSyncSink;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -43,16 +44,16 @@ public class SqlServerAdapterConfig {
                 : configured;
     }
 
+    /** Default JDBC sink — mappings that don't override {@code sinkName()} route here. */
     @Bean
-    public SyncWriter syncWriter(JdbcTemplate jdbc, WriteDialect dialect) {
-        return new SyncWriter(jdbc, dialect);
+    public SyncSink defaultJdbcSink(JdbcTemplate jdbc, WriteDialect dialect) {
+        return new JdbcSyncSink("default", jdbc, dialect);
     }
 
     @Bean
     public SyncEngine<ByteArrayPosition> syncEngine(
             CdcSource<ByteArrayPosition> cdcSource,
-            LsnStore<ByteArrayPosition> lsnStore,
-            SyncWriter syncWriter) {
-        return new SyncEngine<>(cdcSource, lsnStore, syncWriter);
+            LsnStore<ByteArrayPosition> lsnStore) {
+        return new SyncEngine<>(cdcSource, lsnStore);
     }
 }
