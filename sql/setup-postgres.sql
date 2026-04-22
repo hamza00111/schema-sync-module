@@ -76,6 +76,9 @@ $$ LANGUAGE plpgsql;
 
 
 -- 3. Tracking table -----------------------------------------------------------
+--    Default name is public.sync_tracking. To use a different name, set
+--    `schema-sync.tracking-table: <schema>.<table>` in application properties
+--    and create the table below with that name instead.
 CREATE TABLE IF NOT EXISTS public.sync_tracking (
     sync_name       TEXT        PRIMARY KEY,
     last_position   BIGINT      NOT NULL,

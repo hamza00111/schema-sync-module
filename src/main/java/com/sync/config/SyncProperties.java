@@ -11,6 +11,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *   enabled: true
  *   poll-interval-ms: 5000
  *   cdc-retention-days: 3
+ *   tracking-table:             # optional override; defaults:
+ *                               #   sqlserver -> dbo.SyncTracking
+ *                               #   postgres  -> public.sync_tracking
  *   reconciliation:
  *     enabled: true
  *     cron: "0 0 * * * *"
@@ -25,6 +28,7 @@ public class SyncProperties {
     private boolean enabled = true;
     private long pollIntervalMs = 5000;
     private int cdcRetentionDays = 3;
+    private String trackingTable;
     private ReconciliationProperties reconciliation = new ReconciliationProperties();
 
     public Platform getPlatform() { return platform; }
@@ -38,6 +42,9 @@ public class SyncProperties {
 
     public int getCdcRetentionDays() { return cdcRetentionDays; }
     public void setCdcRetentionDays(int cdcRetentionDays) { this.cdcRetentionDays = cdcRetentionDays; }
+
+    public String getTrackingTable() { return trackingTable; }
+    public void setTrackingTable(String trackingTable) { this.trackingTable = trackingTable; }
 
     public ReconciliationProperties getReconciliation() { return reconciliation; }
     public void setReconciliation(ReconciliationProperties reconciliation) { this.reconciliation = reconciliation; }

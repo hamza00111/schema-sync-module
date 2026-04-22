@@ -5,6 +5,7 @@ import com.sync.cdc.spi.CdcSource;
 import com.sync.cdc.spi.HealthQueries;
 import com.sync.cdc.spi.LsnStore;
 import com.sync.cdc.spi.WriteDialect;
+import com.sync.config.SyncProperties;
 import com.sync.core.SyncEngine;
 import com.sync.writer.SyncWriter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -27,8 +28,8 @@ public class PostgresAdapterConfig {
     }
 
     @Bean
-    public LsnStore<Long> lsnStore(JdbcTemplate jdbc) {
-        return new PostgresLsnStore(jdbc);
+    public LsnStore<Long> lsnStore(JdbcTemplate jdbc, SyncProperties props) {
+        return new PostgresLsnStore(jdbc, resolveTrackingTable(props));
     }
 
     @Bean
@@ -37,8 +38,15 @@ public class PostgresAdapterConfig {
     }
 
     @Bean
-    public HealthQueries healthQueries() {
-        return new PostgresHealthQueries();
+    public HealthQueries healthQueries(SyncProperties props) {
+        return new PostgresHealthQueries(resolveTrackingTable(props));
+    }
+
+    private static String resolveTrackingTable(SyncProperties props) {
+        String configured = props.getTrackingTable();
+        return (configured == null || configured.isBlank())
+                ? PostgresLsnStore.DEFAULT_TRACKING_TABLE
+                : configured;
     }
 
     @Bean
