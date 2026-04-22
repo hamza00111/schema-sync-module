@@ -2,9 +2,9 @@ package com.sync.core;
 
 import com.sync.cdc.spi.CdcSource;
 import com.sync.cdc.spi.LsnStore;
+import com.sync.cdc.spi.SyncSink;
 import com.sync.model.ChangeEvent;
 import com.sync.model.SyncCommand;
-import com.sync.writer.SyncWriter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -20,11 +20,13 @@ import java.util.List;
  *   <li>Get the current max position from the {@link CdcSource}</li>
  *   <li>For each source capture instance, read net changes in (from, to]</li>
  *   <li>For each change, invoke the mapping to produce {@link SyncCommand}s</li>
- *   <li>Execute commands via {@link SyncWriter}</li>
+ *   <li>Dispatch commands via the {@link SyncSink} chosen by the caller</li>
  *   <li>Advance the position bookmark</li>
  * </ol>
  *
- * <p>Stateless — all state lives in the database (tracking table).
+ * <p>Stateless — all state lives in the database (tracking table). The sink is passed in per
+ * call so one engine instance can drive multiple mappings that target different sinks (JDBC,
+ * REST API, etc).
  *
  * @param <P> the position type for this platform
  */
@@ -34,18 +36,16 @@ public class SyncEngine<P extends Comparable<P>> {
 
     private final CdcSource<P> cdcSource;
     private final LsnStore<P> lsnStore;
-    private final SyncWriter syncWriter;
 
-    public SyncEngine(CdcSource<P> cdcSource, LsnStore<P> lsnStore, SyncWriter syncWriter) {
+    public SyncEngine(CdcSource<P> cdcSource, LsnStore<P> lsnStore) {
         this.cdcSource = cdcSource;
         this.lsnStore = lsnStore;
-        this.syncWriter = syncWriter;
     }
 
     /**
      * Execute one sync cycle. Returns the number of changes processed.
      */
-    public SyncResult<P> sync(SyncMapping<P> mapping) {
+    public SyncResult<P> sync(SyncMapping<P> mapping, SyncSink sink) {
         String mappingName = mapping.name();
 
         try {
@@ -77,7 +77,7 @@ public class SyncEngine<P extends Comparable<P>> {
                         continue;
                     }
 
-                    syncWriter.execute(commands);
+                    sink.dispatch(mapping, commands);
                     commandsExecuted += commands.size();
 
                 } catch (Exception e) {

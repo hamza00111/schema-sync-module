@@ -6,7 +6,7 @@ import com.sync.core.SyncMapping;
 import com.sync.model.ChangeEvent;
 import com.sync.model.ChangeEvent.OperationType;
 import com.sync.model.SyncCommand;
-import com.sync.writer.SyncWriter;
+import com.sync.writer.JdbcSyncSink;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -32,6 +32,7 @@ class PostgresAdapterIT {
     @Container
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
 
+    private DriverManagerDataSource dataSource;
     private JdbcTemplate jdbc;
     private PostgresCdcSource cdcSource;
     private PostgresLsnStore lsnStore;
@@ -46,6 +47,7 @@ class PostgresAdapterIT {
         ds.setUsername(POSTGRES.getUsername());
         ds.setPassword(POSTGRES.getPassword());
         ds.setDriverClassName("org.postgresql.Driver");
+        this.dataSource = ds;
         this.jdbc = new JdbcTemplate(ds);
 
         // Run the library's setup script. We execute the whole file as one JDBC
@@ -146,6 +148,39 @@ class PostgresAdapterIT {
         assertThat(events.get(0).isSyncOriginated()).isTrue();
     }
 
+    @Test
+    void syncOriginated_detectedViaGUC_withoutSyncSourceColumn() {
+        // Write inside a transaction that sets the sync.source GUC; the trigger should stamp
+        // the origin column and the CDC source should surface it as Origin.SYNC — all WITHOUT
+        // any sync_source column in the payload.
+        var txManager = new org.springframework.jdbc.datasource.DataSourceTransactionManager(dataSource);
+        new org.springframework.transaction.support.TransactionTemplate(txManager).execute(status -> {
+            dialect.stampSyncOrigin(jdbc, "test-mapping");
+            jdbc.update("INSERT INTO products (id, name, price) VALUES (?, ?, ?)",
+                    42L, "no-column", new BigDecimal("1"));
+            return null;
+        });
+
+        List<ChangeEvent<Long>> events = cdcSource.getNetChanges("products", 0L, cdcSource.getMaxPosition());
+
+        assertThat(events).hasSize(1);
+        ChangeEvent<Long> event = events.get(0);
+        assertThat(event.origin()).isEqualTo(ChangeEvent.Origin.SYNC);
+        assertThat(event.isSyncOriginated()).isTrue();
+    }
+
+    @Test
+    void appOriginatedWrite_isStampedAppOrigin() {
+        jdbc.update("INSERT INTO products (id, name, price) VALUES (?, ?, ?)",
+                50L, "regular", new BigDecimal("1"));
+
+        List<ChangeEvent<Long>> events = cdcSource.getNetChanges("products", 0L, cdcSource.getMaxPosition());
+
+        assertThat(events).hasSize(1);
+        assertThat(events.get(0).origin()).isEqualTo(ChangeEvent.Origin.APP);
+        assertThat(events.get(0).isSyncOriginated()).isFalse();
+    }
+
     // --- LsnStore ----------------------------------------------------------
 
     @Test
@@ -227,8 +262,8 @@ class PostgresAdapterIT {
     void syncEngine_mirrorsInsertAndUpdate_throughTriggersAndWriter() {
         SyncMapping<Long> mapping = new MirrorMapping();
 
-        SyncWriter writer = new SyncWriter(jdbc, dialect);
-        SyncEngine<Long> engine = new SyncEngine<>(cdcSource, lsnStore, writer);
+        JdbcSyncSink sink = new JdbcSyncSink("default", jdbc, dialect);
+        SyncEngine<Long> engine = new SyncEngine<>(cdcSource, lsnStore);
         engine.initialize(mapping);
 
         // Write 2 source rows + update one of them — net: 2 upserts
@@ -236,7 +271,7 @@ class PostgresAdapterIT {
         jdbc.update("INSERT INTO products (id, name, price) VALUES (?, ?, ?)", 2L, "B", new BigDecimal("2.00"));
         jdbc.update("UPDATE products SET price = ? WHERE id = ?", new BigDecimal("1.50"), 1L);
 
-        SyncEngine.SyncResult<Long> result = engine.sync(mapping);
+        SyncEngine.SyncResult<Long> result = engine.sync(mapping, sink);
 
         assertThat(result.totalChanges()).isEqualTo(2);
         assertThat(result.commandsExecuted()).isEqualTo(2);
@@ -257,14 +292,14 @@ class PostgresAdapterIT {
     void syncEngine_skipsSyncOriginatedChanges() {
         SyncMapping<Long> mapping = new MirrorMapping();
 
-        SyncWriter writer = new SyncWriter(jdbc, dialect);
-        SyncEngine<Long> engine = new SyncEngine<>(cdcSource, lsnStore, writer);
+        JdbcSyncSink sink = new JdbcSyncSink("default", jdbc, dialect);
+        SyncEngine<Long> engine = new SyncEngine<>(cdcSource, lsnStore);
         engine.initialize(mapping);
 
         jdbc.update("INSERT INTO products (id, name, price, sync_source) VALUES (?, ?, ?, 'SYNC')",
                 1L, "A", new BigDecimal("1"));
 
-        SyncEngine.SyncResult<Long> result = engine.sync(mapping);
+        SyncEngine.SyncResult<Long> result = engine.sync(mapping, sink);
 
         assertThat(result.totalChanges()).isEqualTo(1);
         assertThat(result.changesSkipped()).isEqualTo(1);

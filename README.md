@@ -30,7 +30,8 @@ When migrating from a legacy schema to a new schema using the strangler fig patt
        │                               │  └──────┬──────┘ │ │
        │                               │         ▼        │ │
        │                               │  ┌─────────────┐ │ │
-       │                               │  │  SyncWriter  │ │ │
+       │                               │  │   SyncSink   │ │ │
+       │                               │  │ (JDBC / REST)│ │ │
        │                               │  └──────┬──────┘ │ │
        │                               └─────────┼───────┘ │
        │                                         ▼         ▼
@@ -48,7 +49,7 @@ When migrating from a legacy schema to a new schema using the strangler fig patt
 ## What the Module Handles
 
 - CDC polling and LSN tracking
-- Loop prevention (via `sync_source` column convention)
+- Loop prevention (session-based: SQL Server marker table / Postgres transaction-local GUC, with `sync_source` column as fallback)
 - MERGE-based upserts and deletes on target tables
 - Scheduling and error recovery
 - Reconciliation engine
@@ -115,17 +116,76 @@ The module auto-discovers your `SyncMapping` and `ReconciliationCheck` beans and
 |----------|-----------|
 | CDC over triggers | No application code changes to legacy, no write path overhead |
 | Net changes mode | Collapses multiple changes to same row, reduces write volume |
-| `sync_source` column | Simple, debuggable loop prevention |
+| Session-based origin stamping | Loop prevention without schema changes on user tables |
 | MERGE for writes | Atomic upsert, handles both insert and update |
 | LSN tracking in DB | Survives service restarts, single source of truth |
 | Reconciliation as separate concern | Safety net, doesn't block sync |
 
 ## Loop Prevention
 
-Every table must have a `sync_source VARCHAR(10) DEFAULT 'APP'` column.
-- Application writes → `sync_source = 'APP'` (the default)
-- Sync writes → `sync_source = 'SYNC'` (set explicitly by SyncWriter)
-- SyncMapping implementations call `event.isSyncOriginated()` to skip sync-originated changes
+Mappings call `event.isSyncOriginated()` and return an empty command list to skip sync-origin
+changes. The flag is set at the **source** side — how depends on the platform:
+
+**PostgreSQL** — transaction-local GUC. The sink calls
+`set_config('sync.source', 'SYNC', true)` before its writes; the shared audit trigger
+(`public.sync_record_change`) reads that GUC and stamps an `origin` column on each `sync_audit`
+row. The CDC source maps the column onto `ChangeEvent.Origin.SYNC`. No user table needs a
+`sync_source` column.
+
+**SQL Server** — sidecar marker table. The sink inserts one row into `dbo.sync_markers`
+inside each write transaction; because that row shares its `__$start_lsn` with the user-table
+writes in the same transaction, the CDC source can identify sync-origin LSNs by reading
+`cdc.dbo_sync_markers_CT` for the current poll range and flagging matching events. `CONTEXT_INFO`
+/ `SESSION_CONTEXT` can't be used here because SQL Server CDC doesn't surface them on captured
+rows.
+
+**Fallback (legacy)** — the pre-existing `sync_source VARCHAR(10) DEFAULT 'APP'` column
+convention is still honored: `ChangeEvent.isSyncOriginated()` returns `true` when either the
+source-side origin is `SYNC` or the row has `sync_source = 'SYNC'`. Existing deployments keep
+working; you can migrate off the column incrementally.
+
+Both platform setup scripts (`sql/setup-sqlserver.sql`, `sql/setup-postgres.sql`) now create the
+infrastructure automatically — apply them and the column-less path is enabled.
+
+## Sinks
+
+The write path is pluggable. A **`SyncSink`** receives the `SyncCommand`s produced by a mapping
+and applies them to the target. Two built-in sinks ship:
+
+- **`JdbcSyncSink`** — executes MERGE/DELETE through `JdbcTemplate` + `WriteDialect`. The
+  adapter configs register one automatically under the bean name `"default"`, so existing
+  mappings work with no code change.
+- **`RestApiSyncSink`** — dispatches each command as an HTTP call via Spring's `RestClient`.
+  Use this when the target is another service's REST API rather than its database. The call
+  shape is produced by a `Function<SyncCommand, RestCall>`; `DefaultRestCallPlanner` handles
+  the common "POST /{entity}" + "DELETE /{entity}/{id}" convention.
+
+### Picking a sink per mapping
+
+A mapping selects its sink by bean name via `SyncMapping.sinkName()` (default: `"default"`):
+
+```java
+@Bean
+public SyncSink catalogRestSink() {
+    RestClient client = RestClient.builder().baseUrl("https://catalog.internal").build();
+    return new RestApiSyncSink("catalog-rest", client, new DefaultRestCallPlanner());
+}
+
+@Component
+public class OrdersToCatalogMapping implements SyncMapping<ByteArrayPosition> {
+    @Override public String sinkName() { return "catalog-rest"; }
+    // ...
+}
+```
+
+### NEW → LEGACY: outbox as source
+
+For the reverse direction (push changes from the new module back to legacy), implement a
+`CdcSource<Long>` that reads from a **transactional outbox** table in the new module's DB and
+wire it to a `JdbcSyncSink` pointing at the legacy database. The outbox schema is
+application-specific; loop prevention on the legacy side uses the same marker-table mechanism
+documented above (the `JdbcSyncSink` stamps `dbo.sync_markers` automatically inside its write
+transaction).
 
 ## Monitoring
 
@@ -153,7 +213,10 @@ schema-sync-module/
 │   │   ├── ChangeEvent.java             -- CDC change representation
 │   │   └── SyncCommand.java             -- Write command representation
 │   ├── writer/
-│   │   └── SyncWriter.java              -- Executes MERGE/DELETE
+│   │   ├── JdbcSyncSink.java            -- Executes MERGE/DELETE
+│   │   ├── RestApiSyncSink.java         -- Dispatches commands as HTTP calls
+│   │   ├── DefaultRestCallPlanner.java  -- SyncCommand → POST/DELETE default
+│   │   └── RestCall.java                -- (verb, path, body) record
 │   ├── reconciliation/
 │   │   ├── ReconciliationCheck.java      -- ★ Drift detection (you implement this)
 │   │   └── ReconciliationEngine.java     -- Runs checks on schedule

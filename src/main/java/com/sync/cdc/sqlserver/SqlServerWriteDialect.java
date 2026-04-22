@@ -1,12 +1,29 @@
 package com.sync.cdc.sqlserver;
 
 import com.sync.cdc.spi.WriteDialect;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.util.List;
 import java.util.StringJoiner;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 public class SqlServerWriteDialect implements WriteDialect {
+
+    private static final Logger log = LoggerFactory.getLogger(SqlServerWriteDialect.class);
+
+    /**
+     * Sidecar marker table. A row is inserted here inside the sync sink's transaction so that all
+     * user-table writes in the same transaction share its {@code __$start_lsn} — the CDC source
+     * uses that to flag matching change events as sync-origin. Must be CDC-enabled (see
+     * {@code sql/setup-sqlserver.sql}).
+     */
+    public static final String MARKER_TABLE = "dbo.sync_markers";
+
+    private final AtomicBoolean stampWarningLogged = new AtomicBoolean();
 
     @Override
     public String quoteIdentifier(String identifier) {
@@ -68,6 +85,22 @@ public class SqlServerWriteDialect implements WriteDialect {
     public void validateTableName(String tableName) {
         if (!tableName.matches("[a-zA-Z0-9_.\\[\\]]+")) {
             throw new IllegalArgumentException("Invalid table name: " + tableName);
+        }
+    }
+
+    @Override
+    public void stampSyncOrigin(JdbcTemplate jdbc, String mappingName) {
+        try {
+            jdbc.update("INSERT INTO " + MARKER_TABLE + " (sync_name) VALUES (?)", mappingName);
+        } catch (DataAccessException e) {
+            // Marker table absent (pre-upgrade deployment): fall back to the legacy
+            // `sync_source` column convention. Warn once so operators know to run the updated
+            // setup script if they want the column-less mechanism.
+            if (stampWarningLogged.compareAndSet(false, true)) {
+                log.warn("{} is missing or not writable — falling back to the `sync_source` " +
+                        "column convention. Apply sql/setup-sqlserver.sql to enable the " +
+                        "column-less loop-prevention path. Cause: {}", MARKER_TABLE, e.getMessage());
+            }
         }
     }
 

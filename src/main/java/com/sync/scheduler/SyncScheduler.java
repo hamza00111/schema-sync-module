@@ -1,5 +1,6 @@
 package com.sync.scheduler;
 
+import com.sync.cdc.spi.SyncSink;
 import com.sync.config.SyncProperties;
 import com.sync.core.SyncEngine;
 import com.sync.core.SyncMapping;
@@ -10,6 +11,8 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Auto-discovers all {@link SyncMapping} beans in the application context
@@ -25,20 +28,27 @@ public class SyncScheduler {
 
     private final SyncEngine<?> syncEngine;
     private final List<SyncMapping<?>> mappings;
+    private final Map<String, SyncSink> sinks;
     private final SyncProperties properties;
 
-    public SyncScheduler(SyncEngine<?> syncEngine, List<SyncMapping<?>> mappings, SyncProperties properties) {
+    public SyncScheduler(SyncEngine<?> syncEngine,
+                         List<SyncMapping<?>> mappings,
+                         List<SyncSink> sinks,
+                         SyncProperties properties) {
         this.syncEngine = syncEngine;
         this.mappings = mappings;
+        this.sinks = sinks.stream().collect(Collectors.toMap(SyncSink::name, s -> s));
         this.properties = properties;
     }
 
     @PostConstruct
     void initialize() {
-        log.info("Schema Sync Module: discovered {} mapping(s)", mappings.size());
+        log.info("Schema Sync Module: discovered {} mapping(s), {} sink(s) {}",
+                mappings.size(), sinks.size(), sinks.keySet());
         for (SyncMapping<?> mapping : mappings) {
-            log.info("  - {} [{}] listening to {}",
-                    mapping.name(), mapping.direction(), mapping.sourceCaptureInstances());
+            log.info("  - {} [{}] listening to {} → sink '{}'",
+                    mapping.name(), mapping.direction(), mapping.sourceCaptureInstances(),
+                    mapping.sinkName());
             initAndRun(mapping, true);
         }
     }
@@ -70,7 +80,14 @@ public class SyncScheduler {
         if (initializeOnly) {
             engine.initialize(raw);
         } else {
-            engine.sync(raw);
+            SyncSink sink = sinks.get(mapping.sinkName());
+            if (sink == null) {
+                throw new IllegalStateException(
+                        "No SyncSink bean with name '" + mapping.sinkName()
+                                + "' (required by mapping '" + mapping.name()
+                                + "'). Registered sinks: " + sinks.keySet());
+            }
+            engine.sync(raw, sink);
         }
     }
 }

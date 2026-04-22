@@ -3,6 +3,7 @@ package com.sync.cdc.postgres;
 import com.sync.cdc.spi.CdcSource;
 import com.sync.model.ChangeEvent;
 import com.sync.model.ChangeEvent.OperationType;
+import com.sync.model.ChangeEvent.Origin;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -52,9 +53,9 @@ public class PostgresCdcSource implements CdcSource<Long> {
 
         // DISTINCT ON collapses to the latest change per primary key.
         String sql = """
-                SELECT id, op, row_json, pk_json
+                SELECT id, op, row_json, pk_json, origin
                 FROM (
-                    SELECT DISTINCT ON (pk_json) id, op, row_json, pk_json
+                    SELECT DISTINCT ON (pk_json) id, op, row_json, pk_json, origin
                     FROM public.sync_audit
                     WHERE table_name = ? AND id > ? AND id <= ?
                     ORDER BY pk_json, id DESC
@@ -83,7 +84,8 @@ public class PostgresCdcSource implements CdcSource<Long> {
                 captureInstance,
                 decodeOperation(op),
                 columns,
-                id
+                id,
+                decodeOrigin((String) row.get("origin"))
         );
     }
 
@@ -92,6 +94,20 @@ public class PostgresCdcSource implements CdcSource<Long> {
             case "I", "U" -> OperationType.UPSERT;
             case "D"      -> OperationType.DELETE;
             default       -> throw new IllegalArgumentException("Unknown op: " + op);
+        };
+    }
+
+    /**
+     * Map the trigger-written {@code origin} column to {@link Origin}. {@code null} means the
+     * row predates the column being added — treat as UNKNOWN and let
+     * {@link ChangeEvent#isSyncOriginated()} fall back to the {@code sync_source} convention.
+     */
+    private static Origin decodeOrigin(String raw) {
+        if (raw == null) return Origin.UNKNOWN;
+        return switch (raw.trim()) {
+            case "SYNC" -> Origin.SYNC;
+            case "APP"  -> Origin.APP;
+            default     -> Origin.UNKNOWN;
         };
     }
 }

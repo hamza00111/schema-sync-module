@@ -1,6 +1,8 @@
 package com.sync.writer;
 
+import com.sync.cdc.spi.SyncSink;
 import com.sync.cdc.spi.WriteDialect;
+import com.sync.core.SyncMapping;
 import com.sync.model.SyncCommand;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -12,25 +14,37 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Executes {@link SyncCommand}s against target tables.
+ * {@link SyncSink} that executes {@link SyncCommand}s as MERGE/DELETE against a relational target.
  *
  * <p>SQL is built by the injected {@link WriteDialect} (platform-specific).
  * All commands in a call are run in one transaction.
  */
-public class SyncWriter {
+public class JdbcSyncSink implements SyncSink {
 
-    private static final Logger log = LoggerFactory.getLogger(SyncWriter.class);
+    private static final Logger log = LoggerFactory.getLogger(JdbcSyncSink.class);
 
+    private final String name;
     private final JdbcTemplate jdbc;
     private final WriteDialect dialect;
 
-    public SyncWriter(JdbcTemplate jdbc, WriteDialect dialect) {
+    public JdbcSyncSink(String name, JdbcTemplate jdbc, WriteDialect dialect) {
+        this.name = name;
         this.jdbc = jdbc;
         this.dialect = dialect;
     }
 
+    @Override
+    public String name() {
+        return name;
+    }
+
+    @Override
     @Transactional
-    public void execute(List<SyncCommand> commands) {
+    public void dispatch(SyncMapping<?> mapping, List<SyncCommand> commands) {
+        // Stamp this transaction as sync-origin so our CDC source can flag the resulting
+        // ChangeEvents with Origin.SYNC and downstream mappings can skip them.
+        dialect.stampSyncOrigin(jdbc, mapping.name());
+
         for (SyncCommand cmd : commands) {
             switch (cmd.type()) {
                 case UPSERT -> executeUpsert(cmd);
