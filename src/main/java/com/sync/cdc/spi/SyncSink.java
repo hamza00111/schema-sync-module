@@ -1,5 +1,6 @@
 package com.sync.cdc.spi;
 
+import com.sync.core.SyncMapping;
 import com.sync.model.SyncCommand;
 
 import java.util.List;
@@ -17,8 +18,9 @@ import java.util.List;
  *
  * <p>Semantics expected by {@link com.sync.core.SyncEngine}:
  * <ul>
- *   <li>Throwing from {@link #dispatch(List)} bubbles up; the engine records a per-event error
- *       and continues with the next event, so a single poison command doesn't block the batch.</li>
+ *   <li>Throwing from {@link #dispatch(SyncMapping, List)} bubbles up; the engine records a
+ *       per-event error and continues with the next event, so a single poison command doesn't
+ *       block the batch.</li>
  *   <li>If the sink wants to fail the whole batch and have the bookmark not advance, it must
  *       throw from the outer transaction rather than per-command.</li>
  * </ul>
@@ -28,6 +30,13 @@ public interface SyncSink {
     /** Bean-local identifier, referenced by {@code SyncMapping.sinkName()}. */
     String name();
 
-    /** Apply the given commands to the target. */
-    void dispatch(List<SyncCommand> commands);
+    /**
+     * Apply the given commands to the target.
+     *
+     * <p>The {@code mapping} parameter is passed so platform-aware sinks can stamp the
+     * transaction with loop-prevention metadata (see
+     * {@link WriteDialect#stampSyncOrigin(org.springframework.jdbc.core.JdbcTemplate, String)}).
+     * Sinks that don't need this (e.g. HTTP) may ignore it.
+     */
+    void dispatch(SyncMapping<?> mapping, List<SyncCommand> commands);
 }

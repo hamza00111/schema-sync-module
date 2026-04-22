@@ -1,6 +1,7 @@
 package com.sync.writer;
 
 import com.sync.cdc.spi.SyncSink;
+import com.sync.core.SyncMapping;
 import com.sync.model.SyncCommand;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,7 +50,8 @@ public class RestApiSyncSink implements SyncSink {
     }
 
     @Override
-    public void dispatch(List<SyncCommand> commands) {
+    public void dispatch(SyncMapping<?> mapping, List<SyncCommand> commands) {
+        // Mapping is unused: HTTP targets own their own persistence and cannot loop through our CDC.
         for (SyncCommand cmd : commands) {
             RestCall call = planner.apply(cmd);
             RestClient.RequestBodySpec spec = client.method(call.method()).uri(call.path());

@@ -32,6 +32,7 @@ class PostgresAdapterIT {
     @Container
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
 
+    private DriverManagerDataSource dataSource;
     private JdbcTemplate jdbc;
     private PostgresCdcSource cdcSource;
     private PostgresLsnStore lsnStore;
@@ -46,6 +47,7 @@ class PostgresAdapterIT {
         ds.setUsername(POSTGRES.getUsername());
         ds.setPassword(POSTGRES.getPassword());
         ds.setDriverClassName("org.postgresql.Driver");
+        this.dataSource = ds;
         this.jdbc = new JdbcTemplate(ds);
 
         // Run the library's setup script. We execute the whole file as one JDBC
@@ -144,6 +146,39 @@ class PostgresAdapterIT {
 
         assertThat(events).hasSize(1);
         assertThat(events.get(0).isSyncOriginated()).isTrue();
+    }
+
+    @Test
+    void syncOriginated_detectedViaGUC_withoutSyncSourceColumn() {
+        // Write inside a transaction that sets the sync.source GUC; the trigger should stamp
+        // the origin column and the CDC source should surface it as Origin.SYNC — all WITHOUT
+        // any sync_source column in the payload.
+        var txManager = new org.springframework.jdbc.datasource.DataSourceTransactionManager(dataSource);
+        new org.springframework.transaction.support.TransactionTemplate(txManager).execute(status -> {
+            dialect.stampSyncOrigin(jdbc, "test-mapping");
+            jdbc.update("INSERT INTO products (id, name, price) VALUES (?, ?, ?)",
+                    42L, "no-column", new BigDecimal("1"));
+            return null;
+        });
+
+        List<ChangeEvent<Long>> events = cdcSource.getNetChanges("products", 0L, cdcSource.getMaxPosition());
+
+        assertThat(events).hasSize(1);
+        ChangeEvent<Long> event = events.get(0);
+        assertThat(event.origin()).isEqualTo(ChangeEvent.Origin.SYNC);
+        assertThat(event.isSyncOriginated()).isTrue();
+    }
+
+    @Test
+    void appOriginatedWrite_isStampedAppOrigin() {
+        jdbc.update("INSERT INTO products (id, name, price) VALUES (?, ?, ?)",
+                50L, "regular", new BigDecimal("1"));
+
+        List<ChangeEvent<Long>> events = cdcSource.getNetChanges("products", 0L, cdcSource.getMaxPosition());
+
+        assertThat(events).hasSize(1);
+        assertThat(events.get(0).origin()).isEqualTo(ChangeEvent.Origin.APP);
+        assertThat(events.get(0).isSyncOriginated()).isFalse();
     }
 
     // --- LsnStore ----------------------------------------------------------

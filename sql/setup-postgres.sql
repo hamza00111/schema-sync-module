@@ -7,9 +7,13 @@
 --   3. public.sync_tracking      -- per-mapping position bookmarks
 --
 -- After running this, apply the trigger DDL (bottom of file) for each source
--- table you want synced. Every synced table MUST have:
---   * a primary key
---   * a `sync_source VARCHAR(10) DEFAULT 'APP'` column (for loop prevention)
+-- table you want synced. Every synced table MUST have a primary key.
+--
+-- Loop prevention: the sync sink calls `set_config('sync.source', 'SYNC', true)`
+-- inside every write transaction; the trigger function reads that GUC and
+-- stamps the `origin` column on each sync_audit row. This means source tables
+-- do NOT need a `sync_source` column. (The legacy column convention is still
+-- honored as a fallback — see `ChangeEvent.isSyncOriginated`.)
 -- ============================================================================
 
 
@@ -20,8 +24,13 @@ CREATE TABLE IF NOT EXISTS public.sync_audit (
     op          CHAR(1)     NOT NULL CHECK (op IN ('I', 'U', 'D')),
     pk_json     JSONB       NOT NULL,
     row_json    JSONB       NOT NULL,
+    origin      CHAR(4),                          -- 'APP' | 'SYNC' | NULL (pre-migration rows)
     changed_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Safe to run on an older schema that pre-dates the `origin` column.
+ALTER TABLE public.sync_audit
+    ADD COLUMN IF NOT EXISTS origin CHAR(4);
 
 CREATE INDEX IF NOT EXISTS idx_sync_audit_table_id
     ON public.sync_audit (table_name, id);
@@ -30,13 +39,16 @@ CREATE INDEX IF NOT EXISTS idx_sync_audit_table_id
 -- 2. Shared trigger function --------------------------------------------------
 -- Reads the primary key columns from information_schema at trigger-exec time,
 -- captures old/new row as JSONB, and writes one row to sync_audit.
+-- The `origin` column is stamped from the transaction-local GUC `sync.source`,
+-- which the sync sink sets to 'SYNC' before it writes.
 CREATE OR REPLACE FUNCTION public.sync_record_change()
 RETURNS TRIGGER AS $$
 DECLARE
-    pk_cols  TEXT[];
-    pk_obj   JSONB;
-    row_obj  JSONB;
-    op_code  CHAR(1);
+    pk_cols   TEXT[];
+    pk_obj    JSONB;
+    row_obj   JSONB;
+    op_code   CHAR(1);
+    origin_v  TEXT;
 BEGIN
     -- Resolve primary key columns for this table
     SELECT ARRAY_AGG(a.attname ORDER BY a.attnum)
@@ -67,8 +79,14 @@ BEGIN
       INTO pk_obj
       FROM unnest(pk_cols) AS k;
 
-    INSERT INTO public.sync_audit (table_name, op, pk_json, row_json)
-    VALUES (TG_TABLE_NAME, op_code, pk_obj, row_obj);
+    -- Read transaction-local GUC set by the sync sink; default to 'APP' otherwise.
+    origin_v := current_setting('sync.source', true);
+    IF origin_v IS NULL OR origin_v = '' THEN
+        origin_v := 'APP';
+    END IF;
+
+    INSERT INTO public.sync_audit (table_name, op, pk_json, row_json, origin)
+    VALUES (TG_TABLE_NAME, op_code, pk_obj, row_obj, origin_v);
 
     RETURN NULL;
 END;
@@ -91,14 +109,15 @@ CREATE TABLE IF NOT EXISTS public.sync_tracking (
 -- ============================================================================
 -- Per-table trigger installation template
 -- ============================================================================
--- For each source table you want synced, run the block below. Replace
--- {{TABLE}} with the unqualified table name (e.g. `orders`).
---
---   ALTER TABLE {{TABLE}}
---       ADD COLUMN IF NOT EXISTS sync_source VARCHAR(10) NOT NULL DEFAULT 'APP';
+-- For each source table you want synced, run:
 --
 --   DROP TRIGGER IF EXISTS {{TABLE}}_sync_audit ON {{TABLE}};
 --   CREATE TRIGGER {{TABLE}}_sync_audit
 --       AFTER INSERT OR UPDATE OR DELETE ON {{TABLE}}
 --       FOR EACH ROW EXECUTE FUNCTION public.sync_record_change();
+--
+-- No `sync_source` column needed — loop prevention is handled by the
+-- transaction-local GUC + `origin` column. If you are migrating from an older
+-- setup that uses a `sync_source` column, you may leave it in place; the
+-- fallback in ChangeEvent.isSyncOriginated() continues to honor it.
 -- ============================================================================
