@@ -107,7 +107,7 @@ class SqlServerAdapterIT {
                 """);
 
         this.cdcSource = new SqlServerCdcSource(jdbc);
-        this.lsnStore = new SqlServerLsnStore(jdbc);
+        this.lsnStore = new SqlServerLsnStore(jdbc, SqlServerLsnStore.DEFAULT_TRACKING_TABLE);
         this.dialect = new SqlServerWriteDialect();
 
         // 5. Wait until the capture job has initialized so getMaxLsn returns non-null.

@@ -7,7 +7,10 @@
 EXEC sys.sp_cdc_enable_db;
 GO
 
--- 2. Create the LSN tracking table
+-- 2. Create the LSN tracking table.
+--    Default name is dbo.SyncTracking. To use a different name, set
+--    `schema-sync.tracking-table: <schema>.<table>` in application properties
+--    and create the table below with that name instead.
 CREATE TABLE dbo.SyncTracking (
     sync_name       VARCHAR(100)  PRIMARY KEY,
     last_lsn        BINARY(10)    NOT NULL,

@@ -3,8 +3,9 @@ package com.sync.cdc.spi;
 /**
  * Platform-specific persistence for per-mapping sync bookmarks and counters.
  *
- * <p>Backing table is platform-specific (SQL Server: {@code dbo.SyncTracking}, PostgreSQL:
- * {@code public.sync_tracking}) but the semantics are identical.
+ * <p>Backing table defaults are platform-specific (SQL Server: {@code dbo.SyncTracking},
+ * PostgreSQL: {@code public.sync_tracking}) and can be overridden via the
+ * {@code schema-sync.tracking-table} property. Semantics are identical across platforms.
  *
  * @param <P> the position type for this platform
  */

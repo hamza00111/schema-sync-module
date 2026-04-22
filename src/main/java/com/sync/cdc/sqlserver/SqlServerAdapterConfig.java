@@ -4,6 +4,7 @@ import com.sync.cdc.spi.CdcSource;
 import com.sync.cdc.spi.HealthQueries;
 import com.sync.cdc.spi.LsnStore;
 import com.sync.cdc.spi.WriteDialect;
+import com.sync.config.SyncProperties;
 import com.sync.core.SyncEngine;
 import com.sync.writer.SyncWriter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -21,8 +22,8 @@ public class SqlServerAdapterConfig {
     }
 
     @Bean
-    public LsnStore<ByteArrayPosition> lsnStore(JdbcTemplate jdbc) {
-        return new SqlServerLsnStore(jdbc);
+    public LsnStore<ByteArrayPosition> lsnStore(JdbcTemplate jdbc, SyncProperties props) {
+        return new SqlServerLsnStore(jdbc, resolveTrackingTable(props));
     }
 
     @Bean
@@ -31,8 +32,15 @@ public class SqlServerAdapterConfig {
     }
 
     @Bean
-    public HealthQueries healthQueries() {
-        return new SqlServerHealthQueries();
+    public HealthQueries healthQueries(SyncProperties props) {
+        return new SqlServerHealthQueries(resolveTrackingTable(props));
+    }
+
+    private static String resolveTrackingTable(SyncProperties props) {
+        String configured = props.getTrackingTable();
+        return (configured == null || configured.isBlank())
+                ? SqlServerLsnStore.DEFAULT_TRACKING_TABLE
+                : configured;
     }
 
     @Bean

@@ -82,7 +82,7 @@ class PostgresAdapterIT {
                 """);
 
         this.cdcSource = new PostgresCdcSource(jdbc, new PostgresJsonReader(new ObjectMapper()));
-        this.lsnStore = new PostgresLsnStore(jdbc);
+        this.lsnStore = new PostgresLsnStore(jdbc, PostgresLsnStore.DEFAULT_TRACKING_TABLE);
         this.dialect = new PostgresWriteDialect();
     }
 
