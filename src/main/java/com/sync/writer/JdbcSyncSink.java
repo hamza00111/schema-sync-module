@@ -2,6 +2,7 @@ package com.sync.writer;
 
 import com.sync.cdc.spi.SyncSink;
 import com.sync.cdc.spi.WriteDialect;
+import com.sync.core.SyncMapping;
 import com.sync.model.SyncCommand;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,7 +40,11 @@ public class JdbcSyncSink implements SyncSink {
 
     @Override
     @Transactional
-    public void dispatch(List<SyncCommand> commands) {
+    public void dispatch(SyncMapping<?> mapping, List<SyncCommand> commands) {
+        // Stamp this transaction as sync-origin so our CDC source can flag the resulting
+        // ChangeEvents with Origin.SYNC and downstream mappings can skip them.
+        dialect.stampSyncOrigin(jdbc, mapping.name());
+
         for (SyncCommand cmd : commands) {
             switch (cmd.type()) {
                 case UPSERT -> executeUpsert(cmd);

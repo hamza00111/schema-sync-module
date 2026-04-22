@@ -21,8 +21,17 @@ public record ChangeEvent<P extends Comparable<P>>(
         Map<String, Object> columns,
 
         /* Position assigned by the source for this change. */
-        P position
+        P position,
+
+        /* Who wrote this row: an app, the sync engine itself, or unknown (legacy / pre-migration). */
+        Origin origin
 ) {
+
+    /** 4-arg factory for sources that don't know the origin; defaults to {@link Origin#UNKNOWN}. */
+    public static <P extends Comparable<P>> ChangeEvent<P> of(
+            String captureInstance, OperationType operation, Map<String, Object> columns, P position) {
+        return new ChangeEvent<>(captureInstance, operation, columns, position, Origin.UNKNOWN);
+    }
 
     /**
      * Convenience accessor for a column value with type casting.
@@ -47,11 +56,27 @@ public record ChangeEvent<P extends Comparable<P>>(
 
     /**
      * Check if this change was originated by the sync process itself.
-     * Convention: the source table must have a {@code sync_source} column.
+     *
+     * <p>Primary path: {@link #origin} is {@link Origin#SYNC}, set by the platform CDC source when
+     * it detects a sync-origin transaction (SQL Server marker table LSN / Postgres
+     * {@code sync.source} GUC).
+     *
+     * <p>Fallback: the legacy {@code sync_source} column convention is still honored so existing
+     * schemas keep working without DDL churn.
      */
     public boolean isSyncOriginated() {
-        Object syncSource = columns.get("sync_source");
-        return "SYNC".equals(syncSource);
+        if (origin == Origin.SYNC) return true;
+        return "SYNC".equals(columns.get("sync_source"));
+    }
+
+    /** Origin of the write that produced this change. */
+    public enum Origin {
+        /** Ordinary application write. */
+        APP,
+        /** Written by this sync module (loop-prevention marker detected). */
+        SYNC,
+        /** Source could not determine — treat as APP unless the {@code sync_source} column says otherwise. */
+        UNKNOWN
     }
 
     public enum OperationType {

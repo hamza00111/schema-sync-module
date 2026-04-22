@@ -77,7 +77,7 @@ public class SyncEngine<P extends Comparable<P>> {
                         continue;
                     }
 
-                    sink.dispatch(commands);
+                    sink.dispatch(mapping, commands);
                     commandsExecuted += commands.size();
 
                 } catch (Exception e) {

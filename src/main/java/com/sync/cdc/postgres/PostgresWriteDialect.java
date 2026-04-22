@@ -1,6 +1,7 @@
 package com.sync.cdc.postgres;
 
 import com.sync.cdc.spi.WriteDialect;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.util.List;
 import java.util.stream.Collectors;
@@ -66,6 +67,18 @@ public class PostgresWriteDialect implements WriteDialect {
         if (!tableName.matches("[a-zA-Z0-9_.\"]+")) {
             throw new IllegalArgumentException("Invalid table name: " + tableName);
         }
+    }
+
+    /**
+     * Set the transaction-local GUC {@code sync.source} to {@code 'SYNC'}. The updated audit
+     * trigger ({@code public.sync_record_change}) reads this and stamps the
+     * {@code origin} column on every {@code sync_audit} row it writes within the same transaction.
+     * {@code set_config(..., true)} means "local to the current transaction" — it resets on commit
+     * so pool reuse is safe.
+     */
+    @Override
+    public void stampSyncOrigin(JdbcTemplate jdbc, String mappingName) {
+        jdbc.queryForObject("SELECT set_config('sync.source', 'SYNC', true)", String.class);
     }
 
     private static boolean containsIgnoreCase(List<String> list, String value) {

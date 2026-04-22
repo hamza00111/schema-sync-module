@@ -1,6 +1,8 @@
 package com.sync.writer;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sync.core.SyncMapping;
+import com.sync.model.ChangeEvent;
 import com.sync.model.SyncCommand;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,6 +27,8 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 
 class RestApiSyncSinkTest {
 
+    private static final SyncMapping<?> MAPPING = new StubMapping();
+
     private MockRestServiceServer server;
     private RestApiSyncSink sink;
     private ObjectMapper mapper;
@@ -48,7 +52,7 @@ class RestApiSyncSinkTest {
                 .andExpect(content().json(expectedJson))
                 .andRespond(withSuccess());
 
-        sink.dispatch(List.of(SyncCommand.upsert("catalog/premium-subscriptions", payload, "id")));
+        sink.dispatch(MAPPING, List.of(SyncCommand.upsert("catalog/premium-subscriptions", payload, "id")));
 
         server.verify();
     }
@@ -59,7 +63,7 @@ class RestApiSyncSinkTest {
                 .andExpect(method(HttpMethod.DELETE))
                 .andRespond(withSuccess());
 
-        sink.dispatch(List.of(SyncCommand.delete(
+        sink.dispatch(MAPPING, List.of(SyncCommand.delete(
                 "catalog/premium-subscriptions",
                 Map.of("id", 42),
                 "id")));
@@ -72,7 +76,7 @@ class RestApiSyncSinkTest {
         server.expect(requestTo("http://catalog.test/catalog/premium-subscriptions"))
                 .andRespond(withStatus(org.springframework.http.HttpStatus.BAD_REQUEST));
 
-        assertThatThrownBy(() -> sink.dispatch(List.of(
+        assertThatThrownBy(() -> sink.dispatch(MAPPING, List.of(
                         SyncCommand.upsert("catalog/premium-subscriptions", Map.of("id", 1), "id"))))
                 .isInstanceOf(HttpClientErrorException.class);
     }
@@ -82,7 +86,7 @@ class RestApiSyncSinkTest {
         server.expect(requestTo("http://catalog.test/catalog/premium-subscriptions"))
                 .andRespond(withServerError());
 
-        assertThatThrownBy(() -> sink.dispatch(List.of(
+        assertThatThrownBy(() -> sink.dispatch(MAPPING, List.of(
                         SyncCommand.upsert("catalog/premium-subscriptions", Map.of("id", 1), "id"))))
                 .isInstanceOf(HttpServerErrorException.class);
     }
@@ -96,7 +100,7 @@ class RestApiSyncSinkTest {
                 .andExpect(method(HttpMethod.DELETE))
                 .andRespond(withSuccess());
 
-        sink.dispatch(List.of(
+        sink.dispatch(MAPPING, List.of(
                 SyncCommand.upsert("catalog/premium-subscriptions", Map.of("id", 7, "name", "X"), "id"),
                 SyncCommand.delete("catalog/premium-subscriptions", Map.of("id", 7), "id")));
 
@@ -119,5 +123,13 @@ class RestApiSyncSinkTest {
     @Test
     void name_isReturned() {
         assertThat(sink.name()).isEqualTo("rest");
+    }
+
+    /** Minimal mapping used only to satisfy the sink API; RestApiSyncSink ignores it. */
+    private static class StubMapping implements SyncMapping<Long> {
+        @Override public String name() { return "stub"; }
+        @Override public List<String> sourceCaptureInstances() { return List.of(); }
+        @Override public List<SyncCommand> map(ChangeEvent<Long> event) { return List.of(); }
+        @Override public SyncDirection direction() { return SyncDirection.LEGACY_TO_NEW; }
     }
 }

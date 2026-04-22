@@ -42,6 +42,7 @@ class SqlServerAdapterIT {
 
     private static final Duration CDC_CAPTURE_TIMEOUT = Duration.ofSeconds(60);
 
+    private DriverManagerDataSource dataSource;
     private JdbcTemplate jdbc;
     private SqlServerCdcSource cdcSource;
     private SqlServerLsnStore lsnStore;
@@ -66,6 +67,7 @@ class SqlServerAdapterIT {
         ds.setUsername(MSSQL.getUsername());
         ds.setPassword(MSSQL.getPassword());
         ds.setDriverClassName("com.microsoft.sqlserver.jdbc.SQLServerDriver");
+        this.dataSource = ds;
         this.jdbc = new JdbcTemplate(ds);
 
         // 3. Enable CDC on the DB and create the tracking table.
@@ -102,6 +104,37 @@ class SqlServerAdapterIT {
                 EXEC sys.sp_cdc_enable_table
                     @source_schema       = N'dbo',
                     @source_name         = N'products',
+                    @role_name           = NULL,
+                    @supports_net_changes = 1
+                """);
+
+        // Loop-prevention marker table (column-less sync_source detection).
+        jdbc.execute("""
+                CREATE TABLE dbo.sync_markers (
+                    id          BIGINT IDENTITY PRIMARY KEY,
+                    sync_name   VARCHAR(100) NOT NULL,
+                    created_at  DATETIME2    NOT NULL DEFAULT SYSUTCDATETIME()
+                )
+                """);
+        jdbc.execute("""
+                EXEC sys.sp_cdc_enable_table
+                    @source_schema       = N'dbo',
+                    @source_name         = N'sync_markers',
+                    @role_name           = NULL,
+                    @supports_net_changes = 0
+                """);
+
+        // A column-less source table for the marker-based origin detection test.
+        jdbc.execute("""
+                CREATE TABLE dbo.widgets (
+                    id    BIGINT PRIMARY KEY,
+                    name  NVARCHAR(100) NOT NULL
+                )
+                """);
+        jdbc.execute("""
+                EXEC sys.sp_cdc_enable_table
+                    @source_schema       = N'dbo',
+                    @source_name         = N'widgets',
                     @role_name           = NULL,
                     @supports_net_changes = 1
                 """);
@@ -182,6 +215,41 @@ class SqlServerAdapterIT {
         List<ChangeEvent<ByteArrayPosition>> events = waitForChanges("dbo_products", from, 1);
         assertThat(events).hasSize(1);
         assertThat(events.get(0).isSyncOriginated()).isTrue();
+    }
+
+    @Test
+    void syncOriginated_detectedViaMarkerTable_withoutSyncSourceColumn() {
+        // dbo.widgets has NO sync_source column. We write one row inside a transaction that also
+        // inserts into dbo.sync_markers (via WriteDialect.stampSyncOrigin). Because both writes
+        // share the same __$start_lsn, the CDC source should flag the event as Origin.SYNC.
+        jdbc.update("DELETE FROM dbo.widgets");
+        ByteArrayPosition from = cdcSource.getMaxPosition();
+
+        var txManager = new org.springframework.jdbc.datasource.DataSourceTransactionManager(dataSource);
+        new org.springframework.transaction.support.TransactionTemplate(txManager).execute(status -> {
+            dialect.stampSyncOrigin(jdbc, "widgets-mapping");
+            jdbc.update("INSERT INTO dbo.widgets (id, name) VALUES (?, ?)", 1L, "no-column-widget");
+            return null;
+        });
+
+        List<ChangeEvent<ByteArrayPosition>> events = waitForChanges("dbo_widgets", from, 1);
+        assertThat(events).hasSize(1);
+        ChangeEvent<ByteArrayPosition> event = events.get(0);
+        assertThat(event.origin()).isEqualTo(ChangeEvent.Origin.SYNC);
+        assertThat(event.isSyncOriginated()).isTrue();
+    }
+
+    @Test
+    void appOriginatedWrite_isStampedAppOrigin() {
+        jdbc.update("DELETE FROM dbo.widgets");
+        ByteArrayPosition from = cdcSource.getMaxPosition();
+
+        jdbc.update("INSERT INTO dbo.widgets (id, name) VALUES (?, ?)", 2L, "regular");
+
+        List<ChangeEvent<ByteArrayPosition>> events = waitForChanges("dbo_widgets", from, 1);
+        assertThat(events).hasSize(1);
+        assertThat(events.get(0).origin()).isEqualTo(ChangeEvent.Origin.APP);
+        assertThat(events.get(0).isSyncOriginated()).isFalse();
     }
 
     // --- LsnStore -----------------------------------------------------------
