@@ -3,6 +3,7 @@ package com.sync.admin;
 import com.sync.cdc.spi.CdcSource;
 import com.sync.cdc.spi.HealthQueries;
 import com.sync.cdc.spi.LsnStore;
+import com.sync.cdc.spi.SyncSink;
 import com.sync.config.SyncProperties;
 import com.sync.core.SyncEngine;
 import com.sync.core.SyncMapping;
@@ -20,6 +21,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Admin endpoints for operating the sync service during a migration.
@@ -42,6 +44,7 @@ public class SyncAdminController<P extends Comparable<P>> {
     private final LsnStore<P> lsnStore;
     private final HealthQueries healthQueries;
     private final List<SyncMapping<P>> mappings;
+    private final Map<String, SyncSink> sinks;
     private final SyncProperties properties;
     private final JdbcTemplate jdbc;
 
@@ -50,6 +53,7 @@ public class SyncAdminController<P extends Comparable<P>> {
                                LsnStore<P> lsnStore,
                                HealthQueries healthQueries,
                                List<SyncMapping<P>> mappings,
+                               List<SyncSink> sinks,
                                SyncProperties properties,
                                JdbcTemplate jdbc) {
         this.syncEngine = syncEngine;
@@ -57,6 +61,7 @@ public class SyncAdminController<P extends Comparable<P>> {
         this.lsnStore = lsnStore;
         this.healthQueries = healthQueries;
         this.mappings = mappings;
+        this.sinks = sinks.stream().collect(Collectors.toMap(SyncSink::name, s -> s));
         this.properties = properties;
         this.jdbc = jdbc;
     }
@@ -71,7 +76,15 @@ public class SyncAdminController<P extends Comparable<P>> {
     @PostMapping("/mappings/{name}/run")
     public SyncEngine.SyncResult<P> runNow(@PathVariable String name) {
         log.info("Manual sync triggered for mapping [{}]", name);
-        SyncEngine.SyncResult<P> result = syncEngine.sync(findMapping(name));
+        SyncMapping<P> mapping = findMapping(name);
+        SyncSink sink = sinks.get(mapping.sinkName());
+        if (sink == null) {
+            throw new IllegalStateException(
+                    "No SyncSink bean with name '" + mapping.sinkName()
+                            + "' (required by mapping '" + mapping.name()
+                            + "'). Registered sinks: " + sinks.keySet());
+        }
+        SyncEngine.SyncResult<P> result = syncEngine.sync(mapping, sink);
         log.info("Manual sync completed for [{}]: {} changes, {} commands, {} errors",
                 name, result.totalChanges(), result.commandsExecuted(), result.errors().size());
         return result;

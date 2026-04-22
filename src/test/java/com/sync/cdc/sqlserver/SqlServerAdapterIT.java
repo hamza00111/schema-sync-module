@@ -5,7 +5,7 @@ import com.sync.core.SyncMapping;
 import com.sync.model.ChangeEvent;
 import com.sync.model.ChangeEvent.OperationType;
 import com.sync.model.SyncCommand;
-import com.sync.writer.SyncWriter;
+import com.sync.writer.JdbcSyncSink;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -270,8 +270,8 @@ class SqlServerAdapterIT {
         clearSourceTables();
 
         SyncMapping<ByteArrayPosition> mapping = new MirrorMapping();
-        SyncWriter writer = new SyncWriter(jdbc, dialect);
-        SyncEngine<ByteArrayPosition> engine = new SyncEngine<>(cdcSource, lsnStore, writer);
+        JdbcSyncSink sink = new JdbcSyncSink("default", jdbc, dialect);
+        SyncEngine<ByteArrayPosition> engine = new SyncEngine<>(cdcSource, lsnStore);
         // Re-initialize by upserting the tracking row manually to the current max (skip backlog)
         ByteArrayPosition start = cdcSource.getMaxPosition();
         jdbc.update("DELETE FROM dbo.SyncTracking WHERE sync_name = ?", "products_mirror");
@@ -285,7 +285,7 @@ class SqlServerAdapterIT {
         await().atMost(CDC_CAPTURE_TIMEOUT).pollInterval(Duration.ofSeconds(1))
                 .until(() -> cdcSource.getMaxPosition().compareTo(start) > 0);
 
-        SyncEngine.SyncResult<ByteArrayPosition> result = engine.sync(mapping);
+        SyncEngine.SyncResult<ByteArrayPosition> result = engine.sync(mapping, sink);
 
         assertThat(result.totalChanges()).isEqualTo(2);
         assertThat(result.commandsExecuted()).isEqualTo(2);
